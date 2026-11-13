@@ -3,13 +3,12 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Protocol
 
-import matplotlib.pyplot as plt
+plt = None  # HERESY 2312: the training plots are not here (their paths never run in inference)
 import numpy as np
 import scipy
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from tqdm import trange
 
 from .wn import WN
 
@@ -70,7 +69,7 @@ class Solver:
             return (a**t - 1) / (a - 1)
 
         # Solve h(1/n) = 0.5
-        a = float(scipy.optimize.fsolve(lambda a: h(1 / n, a) - 0.5, x0=0))
+        a = float(scipy.optimize.fsolve(lambda a: h(1 / n, a) - 0.5, x0=0)[0])   # NumPy 2: float() of a 1-element array raises
 
         t = h(t, a=a)
 
@@ -192,7 +191,7 @@ class Solver:
             self._reset_camera()
 
         if self.verbose:
-            steps = trange(self.n_steps, desc="CFM inference")
+            steps = range(self.n_steps)
         else:
             steps = range(self.n_steps)
 

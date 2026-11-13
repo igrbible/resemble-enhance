@@ -12,13 +12,13 @@ class HParams(HParamsBase):
     univnet_nc: int = 96
 
     lcfm_latent_dim: int = 64
-    lcfm_training_mode: str = "ae"
+    lcfm_training_mode: str = "cfm"
     # This value should be carefully tuned when training. Better estimate it from the latent vectors first
-    lcfm_z_scale: float = 5
+    lcfm_z_scale: float = 6
 
     vocoder_extra_dim: int = 32
 
-    gan_training_start_step: int | None = 5_000
+    gan_training_start_step: int | None = None
     enhancer_stage1_run_dir: Path | None = None
 
     denoiser_run_dir: Path | None = None

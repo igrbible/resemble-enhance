@@ -1,16 +1,13 @@
 import logging
 
-import matplotlib.pyplot as plt
-import pandas as pd
 import torch
 from torch import Tensor, nn
 from torch.distributions import Beta
 
 from ..common import Normalizer
-from ..denoiser.inference import load_denoiser
+from ..denoiser.denoiser import Denoiser
+from ..denoiser.hparams import HParams as DenoiserHParams
 from ..melspec import MelSpectrogram
-from ..utils.distributed import global_leader_only
-from ..utils.train_loop import TrainLoop
 from .hparams import HParams
 from .lcfm import CFM, IRMAE, LCFM
 from .univnet import UnivNet
@@ -60,7 +57,7 @@ class Enhancer(nn.Module):
 
         self.mel_fn = MelSpectrogram(hp)
         self.vocoder = UnivNet(self.hp, vocoder_input_dim)
-        self.denoiser = load_denoiser(self.hp.denoiser_run_dir, "cpu")
+        self.denoiser = Denoiser(DenoiserHParams())     # its weights come with the enhancer's own checkpoint
         self.normalizer = Normalizer()
 
         self._eval_lambd = 0.0
@@ -68,32 +65,6 @@ class Enhancer(nn.Module):
         self.dummy: Tensor
         self.register_buffer("dummy", torch.zeros(1))
 
-        if self.hp.enhancer_stage1_run_dir is not None:
-            pretrained_path = self.hp.enhancer_stage1_run_dir / "ds/G/default/mp_rank_00_model_states.pt"
-            self._load_pretrained(pretrained_path)
-
-        logger.info(f"{self.__class__.__name__} summary")
-        logger.info(f"{self.summarize()}")
-
-    def _load_pretrained(self, path):
-        # Clone is necessary as otherwise it holds a reference to the original model
-        cfm_state_dict = {k: v.clone() for k, v in self.lcfm.cfm.state_dict().items()}
-        denoiser_state_dict = {k: v.clone() for k, v in self.denoiser.state_dict().items()}
-        state_dict = torch.load(path, map_location="cpu")["module"]
-        self.load_state_dict(state_dict, strict=False)
-        self.lcfm.cfm.load_state_dict(cfm_state_dict)  # Reset cfm
-        self.denoiser.load_state_dict(denoiser_state_dict)  # Reset denoiser
-        logger.info(f"Loaded pretrained model from {path}")
-
-    def summarize(self):
-        npa_train = lambda m: sum(p.numel() for p in m.parameters() if p.requires_grad)
-        npa = lambda m: sum(p.numel() for p in m.parameters())
-        rows = []
-        for name, module in self.named_children():
-            rows.append(dict(name=name, trainable=npa_train(module), total=npa(module)))
-        rows.append(dict(name="total", trainable=npa_train(self), total=npa(self)))
-        df = pd.DataFrame(rows)
-        return df.to_markdown(index=False)
 
     def to_mel(self, x: Tensor, drop_last=True):
         """
@@ -105,25 +76,6 @@ class Enhancer(nn.Module):
         if drop_last:
             return self.mel_fn(x)[..., :-1]  # (b d t)
         return self.mel_fn(x)
-
-    @global_leader_only
-    @torch.no_grad()
-    def _visualize(self, original_mel, denoised_mel):
-        loop = TrainLoop.get_running_loop()
-        if loop is None or loop.global_step % 100 != 0:
-            return
-
-        plt.figure(figsize=(6, 6))
-        plt.subplot(211)
-        plt.title("Original")
-        plt.imshow(original_mel[0].cpu().numpy(), origin="lower", interpolation="none")
-        plt.subplot(212)
-        plt.title("Denoised")
-        plt.imshow(denoised_mel[0].cpu().numpy(), origin="lower", interpolation="none")
-        plt.tight_layout()
-
-        path = loop.get_running_loop_viz_path("input", ".png")
-        plt.savefig(path, dpi=300)
 
     def _may_denoise(self, x: Tensor, y: Tensor | None = None):
         if self.hp.lcfm_training_mode == "cfm":
@@ -170,7 +122,6 @@ class Enhancer(nn.Module):
                 x_mel_denoised = self.normalizer(self.to_mel(self._may_denoise(x, z)), update=False)
                 x_mel_denoised = x_mel_denoised.detach()
                 x_mel_denoised = lambd * x_mel_denoised + (1 - lambd) * x_mel_original
-                self._visualize(x_mel_original, x_mel_denoised)
             else:
                 lambd = self._eval_lambd
                 if lambd == 0:
